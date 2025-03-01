@@ -181,9 +181,15 @@ def view_group(group_id):
         return redirect(url_for('home'))
     expenses = Expense.query.filter_by(group_id=group_id).order_by(Expense.date.desc()).all()
     balances = Balance.query.filter_by(group_id=group_id).all()
-    balance_dict = {balance.user_id: balance.amount for balance in balances}
-    debts = calculate_debts(balance_dict)
+
+    # Correctly build members_dict with *current* group members:
     members_dict = {member.id: member for member in group.members}
+
+    # Filter balances to include only current members:
+    filtered_balances = [balance for balance in balances if balance.user_id in members_dict]
+    balance_dict = {balance.user_id: balance.amount for balance in filtered_balances}
+
+    debts = calculate_debts(balance_dict)
     return render_template('view_group.html',
                           group=group,
                           expenses=expenses,
@@ -414,7 +420,8 @@ def leave_group(group_id):
     
     balance = Balance.query.filter_by(user_id=user_id, group_id=group_id).first()
     if balance:
-        db.session.delete(balance)
+        balance.amount = 0.0
+        # db.session.delete(balance)
     
     db.session.commit()
     flash('You have left the group')
