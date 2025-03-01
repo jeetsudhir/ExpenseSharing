@@ -1,0 +1,211 @@
+<!-- templates/view_group.html -->
+{% extends 'base.html' %}
+
+{% block title %}{{ group.name }} - Expense Sharing App{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h1>{{ group.name }}</h1>
+        <p>Created: {{ group.created_at|format_date }}</p>
+
+        <ul class="nav nav-tabs mb-4" id="myTab" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="expenses-tab" data-bs-toggle="tab" data-bs-target="#expenses" type="button" role="tab">Expenses</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="balances-tab" data-bs-toggle="tab" data-bs-target="#balances" type="button" role="tab">Balances</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="members-tab" data-bs-toggle="tab" data-bs-target="#members" type="button" role="tab">Members</button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="myTabContent">
+            <div class="tab-pane fade show active" id="expenses" role="tabpanel" aria-labelledby="expenses-tab">
+                <div class="card mb-4">
+                    <div class="card-header">Add Expense</div>
+                    <div class="card-body">
+                        <form method="post" action="{{ url_for('add_expense', group_id=group.id) }}">
+                            <div class="row">
+                                <div class="col-md-5 mb-3">
+                                    <label for="description" class="form-label">Description</label>
+                                    <input type="text" class="form-control" id="description" name="description" placeholder="Dinner, groceries, etc." required>
+                                </div>
+                                <div class="col-md-3 mb-3">
+                                    <label for="amount" class="form-label">Amount</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">$</span>
+                                        <input type="number" step="0.01" min="0.01" class="form-control" id="amount" name="amount" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label for="payer_id" class="form-label">Paid by</label>
+                                    <select class="form-select" id="payer_id" name="payer_id" required>
+                                        {% for member_id, member in members.items() %}
+                                            <option value="{{ member_id }}" {% if member_id == current_user_id %}selected{% endif %}>
+                                                {{ member.username }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Add Expense</button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">Recent Expenses</div>
+                    <div class="card-body">
+                        {% if expenses %}
+                            {% for expense in expenses %}
+                                <div class="card expense-card {% if expense.is_settlement %}settlement-card{% endif %}">
+                                    <div class="card-body">
+                                        <div class="row">
+                                            <div class="col-md-8">
+                                                <h5 class="card-title">{{ expense.description }}</h5>
+                                                <p class="card-text">
+                                                    {% if expense.is_settlement %}
+                                                        {{ members[expense.payer_id].username }} paid {{ members[expense.receiver_id].username }}
+                                                    {% else %}
+                                                        Paid by {{ members[expense.payer_id].username }}
+                                                    {% endif %}
+                                                </p>
+                                            </div>
+                                            <div class="col-md-4 text-end">
+                                                <h5>${{ "%.2f"|format(expense.amount) }}</h5>
+                                                <small class="text-muted">{{ expense.date|format_date }}</small>
+                                                <form method="post" action="{{ url_for('delete_expense', group_id=group.id, expense_id=expense.id) }}" class="d-inline">
+                                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete this expense?')">Delete</button>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        {% else %}
+                            <p class="text-center py-4">No expenses yet. Add one to get started!</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="balances" role="tabpanel" aria-labelledby="balances-tab">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card mb-4">
+                            <div class="card-header">Current Balances</div>
+                            <div class="card-body">
+                                <ul class="list-group">
+                                    {% for member_id, balance in balances.items() %}
+                                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                                            {{ members[member_id].username }}
+                                            <span class="
+                                                {% if balance > 0 %}positive-balance
+                                                {% elif balance < 0 %}negative-balance
+                                                {% else %}neutral-balance{% endif %}
+                                            ">
+                                                ${{ "%.2f"|format(balance) }}
+                                            </span>
+                                        </li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">Suggested Settlements</div>
+                            <div class="card-body">
+                                {% if debts %}
+                                    {% for debt in debts %}
+                                        <div class="card mb-2">
+                                            <div class="card-body">
+                                                <div class="d-flex justify-content-between align-items-center">
+                                                    <div>
+                                                        <span class="negative-balance">{{ members[debt.from].username }}</span>
+                                                        owes
+                                                        <span class="positive-balance">{{ members[debt.to].username }}</span>
+                                                    </div>
+                                                    <div>
+                                                        <span class="fw-bold">${{ "%.2f"|format(debt.amount) }}</span>
+                                                        <form method="post" action="{{ url_for('settle_debt', group_id=group.id) }}" class="d-inline">
+                                                            <input type="hidden" name="from_id" value="{{ debt.from }}">
+                                                            <input type="hidden" name="to_id" value="{{ debt.to }}">
+                                                            <input type="hidden" name="amount" value="{{ debt.amount }}">
+                                                            <button type="submit" class="btn btn-sm btn-success ms-2">Settle</button>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {% endfor %}
+                                {% else %}
+                                    <p class="text-center py-4">All settled up! No payments needed.</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="members" role="tabpanel" aria-labelledby="members-tab">
+                <div class="card mb-4">
+                    <div class="card-header">Add Member</div>
+                    <div class="card-body">
+                        <form method="post" action="{{ url_for('add_member', group_id=group.id) }}">
+                            <div class="input-group">
+                                <input type="text" class="form-control" name="username" placeholder="Username to add" required>
+                                <button class="btn btn-primary" type="submit">Add Member</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">Group Members</div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            {% for member_id, member in members.items() %}
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    {{ member.username }}
+                                    {% if member_id == group.creator_id %}
+                                        <span class="badge bg-primary ms-2">Creator</span>
+                                    {% endif %}
+                                    <div>
+                                        {% if member_id == current_user_id and member_id != group.creator_id %}
+                                            <form method="post" action="{{ url_for('leave_group', group_id=group.id) }}" class="d-inline">
+                                                <button type="submit" class="btn btn-sm btn-warning" onclick="return confirm('Are you sure you want to leave this group?')">Leave</button>
+                                            </form>
+                                        {% endif %}
+                                        {% if current_user_id == group.creator_id and member_id != group.creator_id %}
+                                            <form method="post" action="{{ url_for('remove_member', group_id=group.id, member_id=member_id) }}" class="d-inline">
+                                                <button type="submit" class="btn btn-sm btn-danger ms-2" onclick="return confirm('Are you sure you want to remove {{ member.username }} from the group?')">Remove</button>
+                                            </form>
+                                        {% endif %}
+                                    </div>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="card mt-4">
+                    <div class="card-header">Group Settings</div>
+                    <div class="card-body">
+                        {% if current_user_id == group.creator_id %}
+                            <form method="post" action="{{ url_for('delete_group', group_id=group.id) }}" class="d-inline">
+                                <button type="submit" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this group? This action is irreversible and will delete all expenses and related data.')">Delete Group</button>
+                            </form>
+                        {% else %}
+                            <p class="text-muted">Only the group creator can delete this group.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
