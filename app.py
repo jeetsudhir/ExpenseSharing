@@ -7,15 +7,21 @@ import os
 from sqlalchemy.orm import relationship
 from werkzeug.security import generate_password_hash, check_password_hash
 
-app = Flask(__name__)
+is_local = os.environ.get('FLASK_ENV') == 'development'
+
+if is_local:
+    app = Flask(__name__, instance_path=os.path.join(os.path.abspath(os.path.dirname(__file__)), 'instance'))
+else:
+    app = Flask(__name__)
+
 app.secret_key = os.environ.get('SECRET_KEY', 'your_fallback_key_here')
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 
-if os.environ.get('RENDER'):
+if not is_local:
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///expenses.db'
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///instance/expenses.db'
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
