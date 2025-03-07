@@ -18,10 +18,14 @@ app.secret_key = os.environ.get('SECRET_KEY', 'your_fallback_key_here')
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 
-if not is_local:
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
+print (os.environ.get('FLASK_ENV'))
+
+if os.environ.get('FLASK_ENV') == 'development':
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///expenses.db'
+    print('Using local database')
 else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///instance/expenses.db'
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
+    print('Using production database')
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
