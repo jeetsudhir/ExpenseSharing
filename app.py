@@ -1,7 +1,7 @@
 # app.py
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import os
 from sqlalchemy.orm import relationship
@@ -36,7 +36,7 @@ class User(db.Model):
     username = db.Column(db.String(255), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     groups = relationship('Group', secondary=group_members, back_populates='members')
     expenses_paid = relationship('Expense', backref='payer', foreign_keys='Expense.payer_id')
     def __repr__(self):
@@ -46,7 +46,7 @@ class Group(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.String(100), nullable=False)
     creator_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     members = relationship('User', secondary=group_members, back_populates='groups')
     expenses = relationship('Expense', backref='group', cascade='all, delete-orphan')
     balances = relationship('Balance', backref='group', cascade='all, delete-orphan')
@@ -59,7 +59,7 @@ class Expense(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     description = db.Column(db.String(200), nullable=False)
     amount = db.Column(db.Float, nullable=False)
-    date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    date = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     payer_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False)
     group_id = db.Column(db.String(36), db.ForeignKey('group.id'), nullable=False)
     is_settlement = db.Column(db.Boolean, default=False)
@@ -179,21 +179,46 @@ def view_group(group_id):
     if user not in group.members:
         flash('You are not a member of this group')
         return redirect(url_for('home'))
+    
+    # Get all expenses and their related users
     expenses = Expense.query.filter_by(group_id=group_id).order_by(Expense.date.desc()).all()
-    balances = Balance.query.filter_by(group_id=group_id).all()
+    
+    # Create a dictionary of all users involved in expenses
+    all_users = {}
+    for expense in expenses:
+        # Add payer
+        if expense.payer_id not in all_users:
+            payer = User.query.get(expense.payer_id)
+            if payer:
+                all_users[expense.payer_id] = payer
+        
+        # Add receiver for settlements
+        if expense.is_settlement and expense.receiver_id and expense.receiver_id not in all_users:
+            receiver = User.query.get(expense.receiver_id)
+            if receiver:
+                all_users[expense.receiver_id] = receiver
+        
+        # Add all participants
+        for participant in expense.participants:
+            if participant.id not in all_users:
+                all_users[participant.id] = participant
 
-    # Correctly build members_dict with *current* group members:
+    # Add current group members
     members_dict = {member.id: member for member in group.members}
+    all_users.update(members_dict)  # This will ensure current members take precedence
 
-    # Filter balances to include only current members:
+    # Get balances for current members only
+    balances = Balance.query.filter_by(group_id=group_id).all()
     filtered_balances = [balance for balance in balances if balance.user_id in members_dict]
     balance_dict = {balance.user_id: balance.amount for balance in filtered_balances}
 
     debts = calculate_debts(balance_dict)
+    
     return render_template('view_group.html',
                           group=group,
                           expenses=expenses,
-                          members=members_dict,
+                          members=members_dict,  # Current group members
+                          all_users=all_users,   # All users (including past members)
                           balances=balance_dict,
                           debts=debts,
                           current_user_id=user_id)
@@ -209,16 +234,16 @@ def add_member(group_id):
     username = request.form.get('username')
     user_to_add = User.query.filter_by(username=username).first()
     if not user_to_add:
-        flash('User not found')
+        flash('User not found. Please check the username and try again.', 'error')
         return redirect(url_for('view_group', group_id=group_id))
-    if user_to_add not in group.members:
+    if user_to_add in group.members:
+        flash(f'{username} is already in the group', 'info')
+    else:
         group.members.append(user_to_add)
         balance = Balance(user_id=user_to_add.id, group_id=group_id, amount=0.0)
         db.session.add(balance)
         db.session.commit()
-        flash(f'Added {username} to the group')
-    else:
-        flash(f'{username} is already in the group')
+        flash(f'Added {username} to the group', 'success')
     return redirect(url_for('view_group', group_id=group_id))
 
 @app.route('/group/<group_id>/add_expense', methods=['POST'])
@@ -229,12 +254,13 @@ def add_expense(group_id):
     if not group:
         flash('Group not found')
         return redirect(url_for('home'))
+    
     description = request.form.get('description')
     amount = float(request.form.get('amount'))
     payer_id = request.form.get('payer_id')
-    payer = User.query.get(payer_id)
-    if not payer or payer not in group.members:
-        flash('Invalid payer')
+
+    if not description or not amount or not payer_id:
+        flash('Please fill in all required fields')
         return redirect(url_for('view_group', group_id=group_id))
 
     new_expense = Expense(
@@ -243,53 +269,79 @@ def add_expense(group_id):
         payer_id=payer_id,
         group_id=group_id
     )
-
-    for member in group.members:
-        new_expense.participants.append(member)
-
     db.session.add(new_expense)
 
-    split_amount = amount / len(group.members) # Split based on *current* members
+    # Get or create balances for all members
+    member_balances = {}
     for member in group.members:
         balance = Balance.query.filter_by(user_id=member.id, group_id=group_id).first()
         if not balance:
             balance = Balance(user_id=member.id, group_id=group_id, amount=0.0)
             db.session.add(balance)
+        member_balances[member.id] = balance
+
+    # Equal split among all members
+    split_amount = amount / len(group.members)
+    for member in group.members:
+        new_expense.participants.append(member)
         if member.id == payer_id:
-            balance.amount += (amount - split_amount)
+            member_balances[member.id].amount += (amount - split_amount)
         else:
-            balance.amount -= split_amount
+            member_balances[member.id].amount -= split_amount
 
     db.session.commit()
     flash('Expense added successfully')
     return redirect(url_for('view_group', group_id=group_id))
 
-@app.route('/group/<group_id>/settle', methods=['POST'])
-def settle_debt(group_id):
+@app.route('/group/<group_id>/custom_settle', methods=['POST'])
+def custom_settle(group_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
     group = Group.query.get(group_id)
     if not group:
         flash('Group not found')
         return redirect(url_for('home'))
+    
     from_id = request.form.get('from_id')
     to_id = request.form.get('to_id')
     amount = float(request.form.get('amount'))
+    
+    if not from_id or not to_id or not amount:
+        flash('Please fill in all fields')
+        return redirect(url_for('view_group', group_id=group_id))
+    
+    if from_id == to_id:
+        flash('Cannot settle payment to yourself')
+        return redirect(url_for('view_group', group_id=group_id))
+    
     from_user = User.query.get(from_id)
     to_user = User.query.get(to_id)
-    if not from_user or not to_user or from_user not in group.members or to_user not in group.members:
+    
+    if not from_user or not to_user:
         flash('Invalid users')
+        return redirect(url_for('view_group', group_id=group_id))
+    
+    if from_user not in group.members or to_user not in group.members:
+        flash('Both users must be members of the group')
         return redirect(url_for('view_group', group_id=group_id))
 
     from_balance = Balance.query.filter_by(user_id=from_id, group_id=group_id).first()
     to_balance = Balance.query.filter_by(user_id=to_id, group_id=group_id).first()
+    
     if not from_balance or not to_balance:
         flash('Balance records not found')
         return redirect(url_for('view_group', group_id=group_id))
 
+    # Verify that the settlement makes sense (optional)
+    if from_balance.amount > 0 and to_balance.amount < 0:
+        flash('This settlement may not be optimal. Please check the suggested settlements.')
+        return redirect(url_for('view_group', group_id=group_id))
+
+    # Update balances
     from_balance.amount += amount
     to_balance.amount -= amount
 
+    # Create settlement record
     settlement = Expense(
         description=f"Settlement: {from_user.username} paid {to_user.username}",
         amount=amount,
@@ -429,28 +481,51 @@ def leave_group(group_id):
 
 
 def calculate_debts(balances):
+    # Convert balances to a list of (member_id, amount) tuples and filter out zero balances
+    balance_list = [(member_id, amount) for member_id, amount in balances.items() if abs(amount) > 0.01]
+    
+    # Sort by amount, with negative (debtors) first and positive (creditors) last
+    balance_list.sort(key=lambda x: x[1])
+    
+    # Separate debtors and creditors
+    debtors = [(id, -amt) for id, amt in balance_list if amt < 0]  # Convert negative to positive for easier handling
+    creditors = [(id, amt) for id, amt in balance_list if amt > 0]
+    
+    # Initialize result list
     debts = []
-    positives = [(member, balance) for member, balance in balances.items() if balance > 0]
-    negatives = [(member, -balance) for member, balance in balances.items() if balance < 0]
-    positives.sort(key=lambda x: x[1], reverse=True)
-    negatives.sort(key=lambda x: x[1], reverse=True)
-    i, j = 0, 0
-    while i < len(negatives) and j < len(positives):
-        debtor, debt_amount = negatives[i]
-        creditor, credit_amount = positives[j]
-        amount = min(debt_amount, credit_amount)
-        if amount > 0.01:
+    
+    # While there are still debts to settle
+    i, j = 0, 0  # i for debtors, j for creditors
+    while i < len(debtors) and j < len(creditors):
+        debtor_id, debt = debtors[i]
+        creditor_id, credit = creditors[j]
+        
+        # Find the minimum of debt and credit
+        amount = min(debt, credit)
+        
+        if amount > 0.01:  # Only add if amount is significant (more than 1 cent)
             debts.append({
-                'from': debtor,
-                'to': creditor,
+                'from': debtor_id,
+                'to': creditor_id,
                 'amount': round(amount, 2)
             })
-        negatives[i] = (debtor, debt_amount - amount)
-        positives[j] = (creditor, credit_amount - amount)
-        if negatives[i][1] < 0.01:
+        
+        # Update remaining amounts
+        new_debt = debt - amount
+        new_credit = credit - amount
+        
+        # If debtor has paid off their debt, move to next debtor
+        if new_debt < 0.01:
             i += 1
-        if positives[j][1] < 0.01:
+        else:
+            debtors[i] = (debtor_id, new_debt)
+            
+        # If creditor has been paid fully, move to next creditor
+        if new_credit < 0.01:
             j += 1
+        else:
+            creditors[j] = (creditor_id, new_credit)
+    
     return debts
 
 if __name__ == '__main__':

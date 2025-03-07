@@ -26,7 +26,7 @@
                 <div class="card mb-4">
                     <div class="card-header">Add Expense</div>
                     <div class="card-body">
-                        <form method="post" action="{{ url_for('add_expense', group_id=group.id) }}">
+                        <form method="post" action="{{ url_for('add_expense', group_id=group.id) }}" id="expenseForm">
                             <div class="row">
                                 <div class="col-md-5 mb-3">
                                     <label for="description" class="form-label">Description</label>
@@ -50,7 +50,10 @@
                                     </select>
                                 </div>
                             </div>
-                            <button type="submit" class="btn btn-primary">Add Expense</button>
+
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-plus me-2"></i>Add Expense
+                            </button>
                         </form>
                     </div>
                 </div>
@@ -67,31 +70,91 @@
                                                 <h5 class="card-title">{{ expense.description }}</h5>
                                                 <p class="card-text">
                                                     {% if expense.is_settlement %}
-                                                        {{ members[expense.payer_id].username }} paid {{ members[expense.receiver_id].username }}
+                                                        {% if expense.payer_id in all_users and expense.receiver_id in all_users %}
+                                                            {{ all_users[expense.payer_id].username }} paid {{ all_users[expense.receiver_id].username }}
+                                                        {% else %}
+                                                            Settlement between removed members
+                                                        {% endif %}
                                                     {% else %}
-                                                        Paid by {{ members[expense.payer_id].username }}
+                                                        {% if expense.payer_id in all_users %}
+                                                            Paid by {{ all_users[expense.payer_id].username }}
+                                                        {% else %}
+                                                            Paid by removed member
+                                                        {% endif %}
                                                     {% endif %}
+                                                </p>
+                                                <p class="card-text">
+                                                    <small class="text-muted">Date: {{ expense.date|format_date }}</small>
                                                 </p>
                                             </div>
                                             <div class="col-md-4 text-end">
-                                                <h5>${{ "%.2f"|format(expense.amount) }}</h5>
-                                                <small class="text-muted">{{ expense.date|format_date }}</small>
-                                                <form method="post" action="{{ url_for('delete_expense', group_id=group.id, expense_id=expense.id) }}" class="d-inline">
-                                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete this expense?')">Delete</button>
-                                                </form>
+                                                <h5 class="card-title">${{ "%.2f"|format(expense.amount) }}</h5>
+                                                {% if not expense.is_settlement %}
+                                                    <p class="card-text">
+                                                        Split between: 
+                                                        {% for participant in expense.participants %}
+                                                            {% if participant.id in all_users %}
+                                                                {{ all_users[participant.id].username }}
+                                                            {% else %}
+                                                                removed member
+                                                            {% endif %}
+                                                            {% if not loop.last %}, {% endif %}
+                                                        {% endfor %}
+                                                    </p>
+                                                {% endif %}
                                             </div>
                                         </div>
                                     </div>
                                 </div>
                             {% endfor %}
                         {% else %}
-                            <p class="text-center py-4">No expenses yet. Add one to get started!</p>
+                            <p class="text-muted">No expenses yet</p>
                         {% endif %}
                     </div>
                 </div>
             </div>
 
             <div class="tab-pane fade" id="balances" role="tabpanel" aria-labelledby="balances-tab">
+                <div class="card mb-4">
+                    <div class="card-header">Custom Settlement</div>
+                    <div class="card-body">
+                        <form method="post" action="{{ url_for('custom_settle', group_id=group.id) }}" id="settlementForm">
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <label for="from_id" class="form-label">From</label>
+                                    <select class="form-select" id="from_id" name="from_id" required>
+                                        {% for member_id, member in members.items() %}
+                                            <option value="{{ member_id }}" {% if member_id == current_user_id %}selected{% endif %}>
+                                                {{ member.username }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label for="to_id" class="form-label">To</label>
+                                    <select class="form-select" id="to_id" name="to_id" required>
+                                        {% for member_id, member in members.items() %}
+                                            {% if member_id != current_user_id %}
+                                                <option value="{{ member_id }}">{{ member.username }}</option>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label for="amount" class="form-label">Amount</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">$</span>
+                                        <input type="number" step="0.01" min="0.01" class="form-control" id="amount" name="amount" required>
+                                    </div>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-exchange-alt me-2"></i>Record Payment
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
                 <div class="row">
                     <div class="col-md-6">
                         <div class="card mb-4">
@@ -131,7 +194,7 @@
                                                     </div>
                                                     <div>
                                                         <span class="fw-bold">${{ "%.2f"|format(debt.amount) }}</span>
-                                                        <form method="post" action="{{ url_for('settle_debt', group_id=group.id) }}" class="d-inline">
+                                                        <form method="post" action="{{ url_for('custom_settle', group_id=group.id) }}" class="d-inline">
                                                             <input type="hidden" name="from_id" value="{{ debt.from }}">
                                                             <input type="hidden" name="to_id" value="{{ debt.to }}">
                                                             <input type="hidden" name="amount" value="{{ debt.amount }}">
@@ -155,10 +218,26 @@
                 <div class="card mb-4">
                     <div class="card-header">Add Member</div>
                     <div class="card-body">
-                        <form method="post" action="{{ url_for('add_member', group_id=group.id) }}">
-                            <div class="input-group">
-                                <input type="text" class="form-control" name="username" placeholder="Username to add" required>
-                                <button class="btn btn-primary" type="submit">Add Member</button>
+                        <form method="post" action="{{ url_for('add_member', group_id=group.id) }}" id="addMemberForm">
+                            <div class="mb-3">
+                                <label for="username" class="form-label">Username</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light border-end-0">
+                                        <i class="fas fa-user text-muted"></i>
+                                    </span>
+                                    <input type="text" class="form-control border-start-0 ps-0" 
+                                           id="username" name="username" 
+                                           placeholder="Enter username to add" required
+                                           pattern="[a-zA-Z0-9_-]+" 
+                                           title="Username can only contain letters, numbers, underscores, and hyphens">
+                                    <button class="btn btn-primary" type="submit">
+                                        <i class="fas fa-user-plus me-2"></i>Add Member
+                                    </button>
+                                </div>
+                                <div class="form-text text-muted">
+                                    <i class="fas fa-info-circle me-1"></i>
+                                    The user must have an account to be added to the group
+                                </div>
                             </div>
                         </form>
                     </div>
@@ -170,11 +249,11 @@
                         <ul class="list-group">
                             {% for member_id, member in members.items() %}
                                 <li class="list-group-item d-flex justify-content-between align-items-center">
-                                    {{ member.username }}
-                                    {% if member_id == group.creator_id %}
-                                        <span class="badge bg-primary ms-2">Creator</span>
-                                    {% endif %}
-                                    <div>
+                                    <span>{{ member.username }}</span>
+                                    <div class="d-flex align-items-center">
+                                        {% if member_id == group.creator_id %}
+                                            <span class="btn btn-sm btn-primary me-2">Creator</span>
+                                        {% endif %}
                                         {% if member_id == current_user_id and member_id != group.creator_id %}
                                             <form method="post" action="{{ url_for('leave_group', group_id=group.id) }}" class="d-inline">
                                                 <button type="submit" class="btn btn-sm btn-warning" onclick="return confirm('Are you sure you want to leave this group?')">Leave</button>
@@ -182,7 +261,7 @@
                                         {% endif %}
                                         {% if current_user_id == group.creator_id and member_id != group.creator_id %}
                                             <form method="post" action="{{ url_for('remove_member', group_id=group.id, member_id=member_id) }}" class="d-inline">
-                                                <button type="submit" class="btn btn-sm btn-danger ms-2" onclick="return confirm('Are you sure you want to remove {{ member.username }} from the group?')">Remove</button>
+                                                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to remove {{ member.username }} from the group?')">Remove</button>
                                             </form>
                                         {% endif %}
                                     </div>
@@ -208,4 +287,24 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+// Add member form validation
+document.getElementById('addMemberForm').addEventListener('submit', function(e) {
+    const username = document.getElementById('username').value.trim();
+    if (!username) {
+        e.preventDefault();
+        alert('Please enter a username');
+        return;
+    }
+    
+    if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+        e.preventDefault();
+        alert('Username can only contain letters, numbers, underscores, and hyphens');
+    }
+});
+</script>
 {% endblock %}
